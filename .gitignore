@@ -16,3 +16,4 @@
 
 # Editor specifics
 .vscode
+.DS_Store
