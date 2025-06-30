@@ -1,6 +1,6 @@
-FROM golang:1.17.0-alpine3.14 as builder
+FROM golang:1.22.4-alpine3.20 as builder
 
-LABEL maintainer="Samuel Jirenius <samuel@jirenius.com>"
+LABEL maintainer="Sysarb <devops@sysarb.se>"
 
 WORKDIR /src/resgate
 
