@@ -122,6 +122,15 @@ resgate [options]
 | <code>-V, --trace</code> | Enable trace logging
 | <code>-DV</code> | Debug and trace
 
+### Tracing options
+
+| Option | Description | Default value
+| --- | --- | ---
+| <code>&nbsp;&nbsp;&nbsp;&nbsp;--tracing</code> | Enable OpenTelemetry tracing | `false`
+| <code>&nbsp;&nbsp;&nbsp;&nbsp;--tracingendpoint &lt;url&gt;</code> | OTLP HTTP endpoint | `http://localhost:4318/v1/traces`
+| <code>&nbsp;&nbsp;&nbsp;&nbsp;--tracingservice &lt;name&gt;</code> | Service name for traces | `resgate`
+| <code>&nbsp;&nbsp;&nbsp;&nbsp;--tracingsample &lt;ratio&gt;</code> | Sampling ratio 0.0-1.0 | `1.0`
+
 ### Common options
 
 | Option | Description
@@ -251,7 +260,21 @@ Configuration is a JSON encoded file. If no config file is found at the given pa
     "debug": false,
 
     // Flag enabling trace logging.
-    "trace": false
+    "trace": false,
+
+    // Flag enabling OpenTelemetry tracing.
+    "tracing": false,
+
+    // OTLP HTTP endpoint for sending traces.
+    // Eg. "http://localhost:4318/v1/traces"
+    "tracingEndpoint": "http://localhost:4318/v1/traces",
+
+    // Service name used for traces.
+    "tracingServiceName": "resgate",
+
+    // Sampling ratio for traces (0.0 to 1.0).
+    // 1.0 means all traces are sampled, 0.0 means none.
+    "tracingSampleRatio": 1.0
 }
 ```
 
