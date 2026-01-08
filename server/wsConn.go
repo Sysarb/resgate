@@ -368,13 +368,13 @@ func (c *wsConn) SubscribeResource(rid string, cb func(data *rpc.Resources, err 
 	})
 }
 
-func (c *wsConn) CallResource(rid, action string, params interface{}, cb func(result interface{}, err error)) {
+func (c *wsConn) CallResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsCall.Add(1)
 	}
 
-	c.call(rid, action, params, func(result json.RawMessage, refRID string, err error) {
+	c.call(rid, action, params, tracing, func(result json.RawMessage, refRID string, err error) {
 		c.handleCallAuthResponse(result, refRID, err, cb)
 	})
 }
@@ -403,7 +403,7 @@ func (c *wsConn) CallHTTPResource(rid, action string, params interface{}, cb fun
 				cb(nil, "", err, accessMeta)
 				return
 			}
-			c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, true, func(result json.RawMessage, refRID string, callMeta *codec.Meta, err error) {
+			c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, true, nil, func(result json.RawMessage, refRID string, callMeta *codec.Meta, err error) {
 				c.Enqueue(func() {
 					meta := accessMeta.Merge(callMeta)
 					if err != nil {
@@ -419,7 +419,7 @@ func (c *wsConn) CallHTTPResource(rid, action string, params interface{}, cb fun
 	})
 }
 
-func (c *wsConn) call(rid, action string, params interface{}, cb func(result json.RawMessage, refRID string, err error)) {
+func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result json.RawMessage, refRID string, err error)) {
 	sub, ok := c.subs[rid]
 	if !ok {
 		sub = NewSubscription(c, rid, nil)
@@ -430,7 +430,7 @@ func (c *wsConn) call(rid, action string, params interface{}, cb func(result jso
 			cb(nil, "", err)
 			return
 		}
-		c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, false, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
+		c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
 			c.Enqueue(func() {
 				cb(result, refRID, err)
 			})
@@ -442,35 +442,35 @@ func (c *wsConn) call(rid, action string, params interface{}, cb func(result jso
 // set, while still establishing the HTTP/WebSocket connection.
 func (c *wsConn) AuthResourceNoResult(rid, action string, params interface{}, cb func(refRID string, err error, meta *codec.Meta)) {
 	rname, query := parseRID(c.ExpandCID(rid))
-	c.serv.cache.Auth(c, rname, query, action, c.token, params, true, func(result json.RawMessage, refRID string, meta *codec.Meta, err error) {
+	c.serv.cache.Auth(c, rname, query, action, c.token, params, true, nil, func(result json.RawMessage, refRID string, meta *codec.Meta, err error) {
 		c.Enqueue(func() {
 			cb(refRID, err, meta)
 		})
 	})
 }
 
-func (c *wsConn) AuthResource(rid, action string, params interface{}, cb func(result interface{}, err error)) {
+func (c *wsConn) AuthResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsAuth.Add(1)
 	}
 
 	rname, query := parseRID(c.ExpandCID(rid))
-	c.serv.cache.Auth(c, rname, query, action, c.token, params, false, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
+	c.serv.cache.Auth(c, rname, query, action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
 		c.Enqueue(func() {
 			c.handleCallAuthResponse(result, refRID, err, cb)
 		})
 	})
 }
 
-func (c *wsConn) NewResource(rid string, params interface{}, cb func(result interface{}, err error)) {
+func (c *wsConn) NewResource(rid string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		// Add it as a call, since it translates to that
 		c.serv.metrics.WSRequestsCall.Add(1)
 	}
 
-	c.call(rid, "new", params, func(result json.RawMessage, refRID string, err error) {
+	c.call(rid, "new", params, tracing, func(result json.RawMessage, refRID string, err error) {
 		if err != nil {
 			cb(nil, err)
 			return

@@ -20,6 +20,10 @@ type Client interface {
 	// callback to be called once on a separate go routine.
 	SendRequest(subject string, payload []byte, cb Response)
 
+	// SendRequestWithHeaders sends an asynchronous request on a subject with optional headers,
+	// expecting the Response callback to be called once on a separate go routine.
+	SendRequestWithHeaders(subject string, payload []byte, headers map[string]string, cb Response)
+
 	// Subscribe to all events on a resource namespace.
 	// The namespace has the format "event."+resource
 	Subscribe(namespace string, cb Response) (Unsubscriber, error)

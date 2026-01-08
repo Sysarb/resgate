@@ -36,6 +36,12 @@ type Config struct {
 	ResetThrottle     int `json:"resetThrottle"`
 	ReferenceThrottle int `json:"referenceThrottle"`
 
+	// Tracing configuration
+	Tracing            bool    `json:"tracing"`
+	TracingEndpoint    string  `json:"tracingEndpoint"`
+	TracingServiceName string  `json:"tracingServiceName"`
+	TracingSampleRatio float64 `json:"tracingSampleRatio"`
+
 	NoHTTP             bool `json:"-"` // Disable start of the HTTP server. Used for testing
 	NoUnsubscribeDelay bool `json:"-"` // Set remove and unsubscribe from cache delay to 0. Used for testing.
 

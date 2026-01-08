@@ -16,19 +16,26 @@ type Requester interface {
 	GetResource(rid string, callback func(data *Resources, err error))
 	SubscribeResource(rid string, callback func(data *Resources, err error))
 	UnsubscribeResource(rid string, count int, callback func(ok bool))
-	CallResource(rid, action string, params interface{}, callback func(result interface{}, err error))
-	AuthResource(rid, action string, params interface{}, callback func(result interface{}, err error))
-	NewResource(rid string, params interface{}, callback func(result interface{}, err error))
+	CallResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
+	AuthResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
+	NewResource(rid string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
 	SetVersion(protocol string) (string, error)
 	ProtocolVersion() int
+}
+
+// Tracing contains W3C Trace Context headers for distributed tracing
+type Tracing struct {
+	TraceParent string `json:"traceparent,omitempty"`
+	TraceState  string `json:"tracestate,omitempty"`
 }
 
 // Request represent a RES-client request
 // https://github.com/resgateio/resgate/blob/master/docs/res-client-protocol.md#requests
 type Request struct {
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
-	ID     *uint64         `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+	ID      *uint64         `json:"id"`
+	Tracing *Tracing        `json:"tracing,omitempty"`
 }
 
 // Response represents a RES-client response
@@ -210,7 +217,7 @@ func HandleRequest(data []byte, req Requester) error {
 			}
 		})
 	case "call":
-		req.CallResource(rid, method, r.Params, func(result interface{}, err error) {
+		req.CallResource(rid, method, r.Params, r.Tracing, func(result interface{}, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
@@ -219,7 +226,7 @@ func HandleRequest(data []byte, req Requester) error {
 		})
 
 	case "auth":
-		req.AuthResource(rid, method, r.Params, func(result interface{}, err error) {
+		req.AuthResource(rid, method, r.Params, r.Tracing, func(result interface{}, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
@@ -228,7 +235,7 @@ func HandleRequest(data []byte, req Requester) error {
 		})
 
 	case "new":
-		req.NewResource(rid, r.Params, func(result interface{}, err error) {
+		req.NewResource(rid, r.Params, r.Tracing, func(result interface{}, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {

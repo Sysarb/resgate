@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/resgateio/resgate/logger"
 	"github.com/resgateio/resgate/nats"
 	"github.com/resgateio/resgate/server"
+	"github.com/resgateio/resgate/server/tracing"
 )
 
 const (
@@ -63,6 +65,12 @@ Logging Options:
     -D, --debug                      Enable debugging output
     -V, --trace                      Enable trace logging
     -DV                              Debug and trace
+
+Tracing Options:
+        --tracing                    Enable OpenTelemetry tracing
+        --tracingendpoint <url>      OTLP HTTP endpoint (default: http://localhost:4318/v1/traces)
+        --tracingservice <name>      Service name for traces (default: resgate)
+        --tracingsample <ratio>      Sampling ratio 0.0-1.0 (default: 1.0)
 
 Common Options:
     -h, --help                       Show this message
@@ -182,6 +190,10 @@ func (c *Config) Init(fs *flag.FlagSet, args []string) {
 	fs.BoolVar(&debugTrace, "DV", false, "Enable debug and trace logging.")
 	fs.BoolVar(&showVersion, "version", false, "Print version information.")
 	fs.BoolVar(&showVersion, "v", false, "Print version information.")
+	fs.BoolVar(&c.Tracing, "tracing", false, "Enable OpenTelemetry tracing.")
+	fs.StringVar(&c.TracingEndpoint, "tracingendpoint", "", "OTLP HTTP endpoint.")
+	fs.StringVar(&c.TracingServiceName, "tracingservice", "", "Service name for traces.")
+	fs.Float64Var(&c.TracingSampleRatio, "tracingsample", 0, "Sampling ratio 0.0-1.0.")
 
 	if err := fs.Parse(args); err != nil {
 		printAndDie(fmt.Sprintf("Error parsing command arguments: %s", err.Error()), true)
@@ -313,6 +325,34 @@ func main() {
 
 	l := logger.NewStdLogger(cfg.Debug, cfg.Trace)
 
+	// Initialize tracing if enabled
+	var tracingShutdown func(context.Context) error
+	if cfg.Tracing {
+		endpoint := cfg.TracingEndpoint
+		if endpoint == "" {
+			endpoint = "http://localhost:4318/v1/traces"
+		}
+		serviceName := cfg.TracingServiceName
+		if serviceName == "" {
+			serviceName = "resgate"
+		}
+		sampleRatio := cfg.TracingSampleRatio
+		if sampleRatio == 0 {
+			sampleRatio = 1.0
+		}
+		var err error
+		tracingShutdown, err = tracing.Init(tracing.Config{
+			Enabled:     true,
+			Endpoint:    endpoint,
+			ServiceName: serviceName,
+			SampleRatio: sampleRatio,
+		})
+		if err != nil {
+			printAndDie(fmt.Sprintf("Failed to initialize tracing: %s", err.Error()), false)
+		}
+		l.Log(fmt.Sprintf("Tracing enabled: endpoint=%s, service=%s, sample=%.2f", endpoint, serviceName, sampleRatio))
+	}
+
 	// Remove below if clause after release of version >= 1.3.x
 	if cfg.RequestTimeout <= 10 {
 		fmt.Fprintf(os.Stderr, "[DEPRECATED] Request timeout should be in milliseconds.\nChange your requestTimeout from %d to %d, and you won't be bothered anymore.\n", cfg.RequestTimeout, cfg.RequestTimeout*1000)
@@ -356,6 +396,12 @@ func main() {
 	go func() {
 		defer close(done)
 		serv.Stop(nil)
+		// Shutdown tracing
+		if tracingShutdown != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			tracingShutdown(ctx)
+		}
 	}()
 
 	select {

@@ -1,6 +1,7 @@
 package rescache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,10 @@ import (
 	"github.com/resgateio/resgate/server/metrics"
 	"github.com/resgateio/resgate/server/mq"
 	"github.com/resgateio/resgate/server/reserr"
+	"github.com/resgateio/resgate/server/rpc"
+	"github.com/resgateio/resgate/server/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Cache is an in memory resource cache.
@@ -174,11 +179,27 @@ func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, callback 
 }
 
 // Call sends a method call request
-func (c *Cache) Call(req codec.Requester, rname, query, action string, token, params interface{}, isHTTP bool, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
+func (c *Cache) Call(req codec.Requester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
 	payload := codec.CreateRequest(params, req, query, token, isHTTP)
 	subj := "call." + rname + "." + action
-	c.sendRequest(rname, subj, payload, func(data []byte, err error) {
+
+	// Extract parent context and start span
+	ctx := extractTracingContext(t)
+	ctx, span := tracing.StartSpan(ctx, "resgate.call."+action,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("res.resource", rname),
+			attribute.String("res.action", action),
+		),
+	)
+
+	// Inject trace context into headers
+	headers := tracing.InjectHeaders(ctx)
+
+	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
+		defer tracing.EndSpan(span)
 		if err != nil {
+			tracing.RecordError(ctx, err)
 			callback(nil, "", nil, err)
 			return
 		}
@@ -190,29 +211,59 @@ func (c *Cache) Call(req codec.Requester, rname, query, action string, token, pa
 				rid, err = codec.TryDecodeLegacyNewResult(result)
 				if err != nil || rid != "" {
 					c.deprecated(rname, deprecatedNewCallRequest)
+					if err != nil {
+						tracing.RecordError(ctx, err)
+					}
 					callback(nil, rid, meta, err)
 					return
 				}
+			}
+			if err != nil {
+				tracing.RecordError(ctx, err)
 			}
 			callback(result, rid, meta, err)
 			return
 		}
 
-		callback(codec.DecodeCallResponse(data))
+		result, rid, meta, decodeErr := codec.DecodeCallResponse(data)
+		if decodeErr != nil {
+			tracing.RecordError(ctx, decodeErr)
+		}
+		callback(result, rid, meta, decodeErr)
 	})
 }
 
 // Auth sends an auth method call
-func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token, params interface{}, isHTTP bool, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
+func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
 	payload := codec.CreateAuthRequest(params, req, query, token, isHTTP)
 	subj := "auth." + rname + "." + action
-	c.sendRequest(rname, subj, payload, func(data []byte, err error) {
+
+	// Extract parent context and start span
+	ctx := extractTracingContext(t)
+	ctx, span := tracing.StartSpan(ctx, "resgate.auth."+action,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("res.resource", rname),
+			attribute.String("res.action", action),
+		),
+	)
+
+	// Inject trace context into headers
+	headers := tracing.InjectHeaders(ctx)
+
+	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
+		defer tracing.EndSpan(span)
 		if err != nil {
+			tracing.RecordError(ctx, err)
 			callback(nil, "", nil, err)
 			return
 		}
 
-		callback(codec.DecodeCallResponse(data))
+		result, rid, meta, decodeErr := codec.DecodeCallResponse(data)
+		if decodeErr != nil {
+			tracing.RecordError(ctx, decodeErr)
+		}
+		callback(result, rid, meta, decodeErr)
 	})
 }
 
@@ -230,13 +281,25 @@ func (c *Cache) CustomAuth(req codec.AuthRequester, subj, query string, token, p
 }
 
 func (c *Cache) sendRequest(rname, subj string, payload []byte, cb func(data []byte, err error)) {
+	c.sendRequestWithHeaders(rname, subj, payload, nil, cb)
+}
+
+func (c *Cache) sendRequestWithHeaders(rname, subj string, payload []byte, headers map[string]string, cb func(data []byte, err error)) {
 	eventSub, _ := c.getSubscription(rname, false)
-	c.mq.SendRequest(subj, payload, func(_ string, data []byte, err error) {
+	c.mq.SendRequestWithHeaders(subj, payload, headers, func(_ string, data []byte, err error) {
 		eventSub.Enqueue(func() {
 			cb(data, err)
 			eventSub.removeCount(1)
 		})
 	})
+}
+
+// extractTracingContext extracts trace context from rpc.Tracing
+func extractTracingContext(t *rpc.Tracing) context.Context {
+	if t == nil {
+		return context.Background()
+	}
+	return tracing.ExtractContext(t.TraceParent, t.TraceState)
 }
 
 // AddConn adds a connection listening to events such as system token reset

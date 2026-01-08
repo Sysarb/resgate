@@ -28,6 +28,7 @@ type Request struct {
 	Subject    string
 	RawPayload []byte
 	Payload    interface{}
+	Headers    map[string]string
 	c          *NATSTestClient
 	cb         mq.Response
 }
@@ -108,6 +109,12 @@ func (c *NATSTestClient) Close() {
 // SendRequest sends an asynchronous request on a subject, expecting the Response
 // callback to be called once.
 func (c *NATSTestClient) SendRequest(subj string, payload []byte, cb mq.Response) {
+	c.SendRequestWithHeaders(subj, payload, nil, cb)
+}
+
+// SendRequestWithHeaders sends an asynchronous request on a subject with optional headers,
+// expecting the Response callback to be called once.
+func (c *NATSTestClient) SendRequestWithHeaders(subj string, payload []byte, headers map[string]string, cb mq.Response) {
 	// Validate max control line size
 	// 7  = nats inbox prefix length
 	// 22 = nuid size
@@ -129,6 +136,7 @@ func (c *NATSTestClient) SendRequest(subj string, payload []byte, cb mq.Response
 		Subject:    subj,
 		RawPayload: payload,
 		Payload:    p,
+		Headers:    headers,
 		c:          c,
 		cb:         cb,
 	}

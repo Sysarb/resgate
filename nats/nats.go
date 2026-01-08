@@ -212,6 +212,45 @@ func (c *Client) SendRequest(subj string, payload []byte, cb mq.Response) {
 	c.mqReqs[sub] = &responseCont{isReq: true, f: cb}
 }
 
+// SendRequestWithHeaders sends a request to the MQ with optional headers.
+func (c *Client) SendRequestWithHeaders(subj string, payload []byte, headers map[string]string, cb mq.Response) {
+	inbox := nats.NewInbox()
+
+	// Validate max control line size
+	if len(subj)+len(inbox) > nats.MAX_CONTROL_LINE_SIZE {
+		go cb("", nil, mq.ErrSubjectTooLong)
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	sub, err := c.mq.ChanSubscribe(inbox, c.mqCh)
+	if err != nil {
+		go cb("", nil, err)
+		return
+	}
+	c.Tracef("<== (%s) %s: %s", inboxSubstr(inbox), subj, payload)
+
+	// Create message with headers if provided
+	msg := nats.NewMsg(subj)
+	msg.Data = payload
+	msg.Reply = inbox
+	for k, v := range headers {
+		msg.Header.Set(k, v)
+	}
+
+	err = c.mq.PublishMsg(msg)
+	if err != nil {
+		sub.Unsubscribe()
+		go cb("", nil, err)
+		return
+	}
+
+	c.tq.Add(sub)
+	c.mqReqs[sub] = &responseCont{isReq: true, f: cb}
+}
+
 // Subscribe to all events on a resource namespace.
 // The namespace has the format "event."+resource
 func (c *Client) Subscribe(namespace string, cb mq.Response) (mq.Unsubscriber, error) {
