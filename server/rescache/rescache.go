@@ -179,7 +179,7 @@ func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, callback 
 }
 
 // Call sends a method call request
-func (c *Cache) Call(req codec.Requester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
+func (c *Cache) Call(req codec.Requester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, t *rpc.Tracing, err error)) {
 	payload := codec.CreateRequest(params, req, query, token, isHTTP)
 	subj := "call." + rname + "." + action
 
@@ -197,10 +197,13 @@ func (c *Cache) Call(req codec.Requester, rname, query, action string, token, pa
 	headers := tracing.InjectHeaders(ctx)
 
 	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
+		// Extract trace context before ending span
+		respTracing := extractResponseTracing(ctx, t)
 		defer tracing.EndSpan(span)
+
 		if err != nil {
 			tracing.RecordError(ctx, err)
-			callback(nil, "", nil, err)
+			callback(nil, "", nil, respTracing, err)
 			return
 		}
 
@@ -214,14 +217,14 @@ func (c *Cache) Call(req codec.Requester, rname, query, action string, token, pa
 					if err != nil {
 						tracing.RecordError(ctx, err)
 					}
-					callback(nil, rid, meta, err)
+					callback(nil, rid, meta, respTracing, err)
 					return
 				}
 			}
 			if err != nil {
 				tracing.RecordError(ctx, err)
 			}
-			callback(result, rid, meta, err)
+			callback(result, rid, meta, respTracing, err)
 			return
 		}
 
@@ -229,12 +232,12 @@ func (c *Cache) Call(req codec.Requester, rname, query, action string, token, pa
 		if decodeErr != nil {
 			tracing.RecordError(ctx, decodeErr)
 		}
-		callback(result, rid, meta, decodeErr)
+		callback(result, rid, meta, respTracing, decodeErr)
 	})
 }
 
 // Auth sends an auth method call
-func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, err error)) {
+func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token, params interface{}, isHTTP bool, t *rpc.Tracing, callback func(result json.RawMessage, rid string, meta *codec.Meta, t *rpc.Tracing, err error)) {
 	payload := codec.CreateAuthRequest(params, req, query, token, isHTTP)
 	subj := "auth." + rname + "." + action
 
@@ -252,10 +255,13 @@ func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token
 	headers := tracing.InjectHeaders(ctx)
 
 	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
+		// Extract trace context before ending span
+		respTracing := extractResponseTracing(ctx, t)
 		defer tracing.EndSpan(span)
+
 		if err != nil {
 			tracing.RecordError(ctx, err)
-			callback(nil, "", nil, err)
+			callback(nil, "", nil, respTracing, err)
 			return
 		}
 
@@ -263,7 +269,7 @@ func (c *Cache) Auth(req codec.AuthRequester, rname, query, action string, token
 		if decodeErr != nil {
 			tracing.RecordError(ctx, decodeErr)
 		}
-		callback(result, rid, meta, decodeErr)
+		callback(result, rid, meta, respTracing, decodeErr)
 	})
 }
 
@@ -300,6 +306,22 @@ func extractTracingContext(t *rpc.Tracing) context.Context {
 		return context.Background()
 	}
 	return tracing.ExtractContext(t.TraceParent, t.TraceState)
+}
+
+// extractResponseTracing extracts W3C trace context from the current span for response.
+// Only returns tracing if the original request included tracing.
+func extractResponseTracing(ctx context.Context, reqTracing *rpc.Tracing) *rpc.Tracing {
+	if reqTracing == nil {
+		return nil
+	}
+	traceparent, tracestate := tracing.ExtractHeaders(ctx)
+	if traceparent == "" {
+		return nil
+	}
+	return &rpc.Tracing{
+		TraceParent: traceparent,
+		TraceState:  tracestate,
+	}
 }
 
 // AddConn adds a connection listening to events such as system token reset

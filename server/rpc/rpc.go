@@ -16,9 +16,9 @@ type Requester interface {
 	GetResource(rid string, callback func(data *Resources, err error))
 	SubscribeResource(rid string, callback func(data *Resources, err error))
 	UnsubscribeResource(rid string, count int, callback func(ok bool))
-	CallResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
-	AuthResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
-	NewResource(rid string, params interface{}, tracing *Tracing, callback func(result interface{}, err error))
+	CallResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, t *Tracing, err error))
+	AuthResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, t *Tracing, err error))
+	NewResource(rid string, params interface{}, tracing *Tracing, callback func(result interface{}, t *Tracing, err error))
 	SetVersion(protocol string) (string, error)
 	ProtocolVersion() int
 }
@@ -40,8 +40,9 @@ type Request struct {
 
 // Response represents a RES-client response
 type Response struct {
-	Result interface{} `json:"result,omitempty"`
-	ID     *uint64     `json:"id"`
+	Result  interface{} `json:"result,omitempty"`
+	ID      *uint64     `json:"id"`
+	Tracing *Tracing    `json:"tracing,omitempty"`
 }
 
 // Event represent a RES-client event object
@@ -217,29 +218,29 @@ func HandleRequest(data []byte, req Requester) error {
 			}
 		})
 	case "call":
-		req.CallResource(rid, method, r.Params, r.Tracing, func(result interface{}, err error) {
+		req.CallResource(rid, method, r.Params, r.Tracing, func(result interface{}, t *Tracing, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
-				req.Reply(r.SuccessResponse(result))
+				req.Reply(r.SuccessResponseWithTracing(result, t))
 			}
 		})
 
 	case "auth":
-		req.AuthResource(rid, method, r.Params, r.Tracing, func(result interface{}, err error) {
+		req.AuthResource(rid, method, r.Params, r.Tracing, func(result interface{}, t *Tracing, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
-				req.Reply(r.SuccessResponse(result))
+				req.Reply(r.SuccessResponseWithTracing(result, t))
 			}
 		})
 
 	case "new":
-		req.NewResource(rid, r.Params, r.Tracing, func(result interface{}, err error) {
+		req.NewResource(rid, r.Params, r.Tracing, func(result interface{}, t *Tracing, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
-				req.Reply(r.SuccessResponse(result))
+				req.Reply(r.SuccessResponseWithTracing(result, t))
 			}
 		})
 
@@ -253,6 +254,12 @@ func HandleRequest(data []byte, req Requester) error {
 // SuccessResponse encodes a result to a request response
 func (r *Request) SuccessResponse(result interface{}) []byte {
 	out, _ := json.Marshal(Response{Result: result, ID: r.ID})
+	return out
+}
+
+// SuccessResponseWithTracing encodes a result with optional tracing to a request response
+func (r *Request) SuccessResponseWithTracing(result interface{}, tracing *Tracing) []byte {
+	out, _ := json.Marshal(Response{Result: result, ID: r.ID, Tracing: tracing})
 	return out
 }
 

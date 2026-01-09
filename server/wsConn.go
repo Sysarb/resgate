@@ -368,14 +368,14 @@ func (c *wsConn) SubscribeResource(rid string, cb func(data *rpc.Resources, err 
 	})
 }
 
-func (c *wsConn) CallResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
+func (c *wsConn) CallResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, t *rpc.Tracing, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsCall.Add(1)
 	}
 
-	c.call(rid, action, params, tracing, func(result json.RawMessage, refRID string, err error) {
-		c.handleCallAuthResponse(result, refRID, err, cb)
+	c.call(rid, action, params, tracing, func(result json.RawMessage, refRID string, t *rpc.Tracing, err error) {
+		c.handleCallAuthResponse(result, refRID, t, err, cb)
 	})
 }
 
@@ -403,7 +403,7 @@ func (c *wsConn) CallHTTPResource(rid, action string, params interface{}, cb fun
 				cb(nil, "", err, accessMeta)
 				return
 			}
-			c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, true, nil, func(result json.RawMessage, refRID string, callMeta *codec.Meta, err error) {
+			c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, true, nil, func(result json.RawMessage, refRID string, callMeta *codec.Meta, _ *rpc.Tracing, err error) {
 				c.Enqueue(func() {
 					meta := accessMeta.Merge(callMeta)
 					if err != nil {
@@ -419,7 +419,7 @@ func (c *wsConn) CallHTTPResource(rid, action string, params interface{}, cb fun
 	})
 }
 
-func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result json.RawMessage, refRID string, err error)) {
+func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result json.RawMessage, refRID string, t *rpc.Tracing, err error)) {
 	sub, ok := c.subs[rid]
 	if !ok {
 		sub = NewSubscription(c, rid, nil)
@@ -427,12 +427,12 @@ func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Traci
 
 	sub.CanCall(action, func(err error) {
 		if err != nil {
-			cb(nil, "", err)
+			cb(nil, "", nil, err)
 			return
 		}
-		c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
+		c.serv.cache.Call(c, sub.ResourceName(), sub.ResourceQuery(), action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, t *rpc.Tracing, err error) {
 			c.Enqueue(func() {
-				cb(result, refRID, err)
+				cb(result, refRID, t, err)
 			})
 		})
 	})
@@ -442,53 +442,53 @@ func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Traci
 // set, while still establishing the HTTP/WebSocket connection.
 func (c *wsConn) AuthResourceNoResult(rid, action string, params interface{}, cb func(refRID string, err error, meta *codec.Meta)) {
 	rname, query := parseRID(c.ExpandCID(rid))
-	c.serv.cache.Auth(c, rname, query, action, c.token, params, true, nil, func(result json.RawMessage, refRID string, meta *codec.Meta, err error) {
+	c.serv.cache.Auth(c, rname, query, action, c.token, params, true, nil, func(result json.RawMessage, refRID string, meta *codec.Meta, _ *rpc.Tracing, err error) {
 		c.Enqueue(func() {
 			cb(refRID, err, meta)
 		})
 	})
 }
 
-func (c *wsConn) AuthResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
+func (c *wsConn) AuthResource(rid, action string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, t *rpc.Tracing, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsAuth.Add(1)
 	}
 
 	rname, query := parseRID(c.ExpandCID(rid))
-	c.serv.cache.Auth(c, rname, query, action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, err error) {
+	c.serv.cache.Auth(c, rname, query, action, c.token, params, false, tracing, func(result json.RawMessage, refRID string, _ *codec.Meta, t *rpc.Tracing, err error) {
 		c.Enqueue(func() {
-			c.handleCallAuthResponse(result, refRID, err, cb)
+			c.handleCallAuthResponse(result, refRID, t, err, cb)
 		})
 	})
 }
 
-func (c *wsConn) NewResource(rid string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, err error)) {
+func (c *wsConn) NewResource(rid string, params interface{}, tracing *rpc.Tracing, cb func(result interface{}, t *rpc.Tracing, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		// Add it as a call, since it translates to that
 		c.serv.metrics.WSRequestsCall.Add(1)
 	}
 
-	c.call(rid, "new", params, tracing, func(result json.RawMessage, refRID string, err error) {
+	c.call(rid, "new", params, tracing, func(result json.RawMessage, refRID string, t *rpc.Tracing, err error) {
 		if err != nil {
-			cb(nil, err)
+			cb(nil, t, err)
 			return
 		}
 
 		if refRID == "" {
-			cb(nil, errInvalidNewResourceResponse)
+			cb(nil, t, errInvalidNewResourceResponse)
 			return
 		}
 
 		// Handle resource result
-		c.handleResourceResult(refRID, cb)
+		c.handleResourceResult(refRID, t, cb)
 	})
 }
 
-func (c *wsConn) handleCallAuthResponse(result json.RawMessage, refRID string, err error, cb func(result interface{}, err error)) {
+func (c *wsConn) handleCallAuthResponse(result json.RawMessage, refRID string, t *rpc.Tracing, err error, cb func(result interface{}, t *rpc.Tracing, err error)) {
 	if err != nil {
-		cb(nil, err)
+		cb(nil, t, err)
 		return
 	}
 
@@ -496,27 +496,27 @@ func (c *wsConn) handleCallAuthResponse(result json.RawMessage, refRID string, e
 	if c.protocolVer < versionCallResourceResponse {
 		// Handle resource response by just returning the resource ID without subscription
 		if refRID != "" {
-			cb(rpc.CallResourceResult{RID: refRID}, nil)
+			cb(rpc.CallResourceResult{RID: refRID}, t, nil)
 		} else {
-			cb(result, err)
+			cb(result, t, err)
 		}
 		return
 	}
 
 	// Handle payload result
 	if refRID == "" {
-		cb(rpc.CallPayloadResult{Payload: result}, nil)
+		cb(rpc.CallPayloadResult{Payload: result}, t, nil)
 		return
 	}
 
 	// Handle resource result
-	c.handleResourceResult(refRID, cb)
+	c.handleResourceResult(refRID, t, cb)
 }
 
-func (c *wsConn) handleResourceResult(refRID string, cb func(result interface{}, err error)) {
+func (c *wsConn) handleResourceResult(refRID string, t *rpc.Tracing, cb func(result interface{}, t *rpc.Tracing, err error)) {
 	sub, err := c.Subscribe(refRID, true, nil)
 	if err != nil {
-		cb(nil, err)
+		cb(nil, t, err)
 		return
 	}
 	sub.CanGet(func(err error) {
@@ -531,7 +531,7 @@ func (c *wsConn) handleResourceResult(refRID string, cb func(result interface{},
 						sub.RID(): reserr.RESError(err),
 					},
 				},
-			}, nil)
+			}, t, nil)
 			c.Unsubscribe(sub, true, false, 1, true)
 			return
 		}
@@ -542,7 +542,7 @@ func (c *wsConn) handleResourceResult(refRID string, cb func(result interface{},
 			cb(&rpc.CallResourceResult{
 				RID:       sub.RID(),
 				Resources: sub.GetRPCResources(false),
-			}, nil)
+			}, t, nil)
 			sub.ReleaseRPCResources()
 		})
 	})

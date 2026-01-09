@@ -4,7 +4,7 @@ import "time"
 
 const (
 	// Version is the current version for the server.
-	Version = "1.8.7"
+	Version = "1.8.8"
 
 	// ProtocolVersion is the implemented RES protocol version.
 	ProtocolVersion = "1.2.3"

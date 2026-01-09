@@ -156,3 +156,13 @@ func ExtractContext(traceparent, tracestate string) context.Context {
 	}
 	return propagator.Extract(context.Background(), carrier)
 }
+
+// ExtractHeaders extracts W3C trace context from the current span in context
+func ExtractHeaders(ctx context.Context) (traceparent, tracestate string) {
+	if !enabled {
+		return "", ""
+	}
+	carrier := make(propagation.MapCarrier)
+	propagator.Inject(ctx, carrier)
+	return carrier["traceparent"], carrier["tracestate"]
+}
