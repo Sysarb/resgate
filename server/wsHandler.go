@@ -26,12 +26,14 @@ func (s *Service) initWSHandler() {
 			return matchesOrigins(origins, origin[0])
 		}
 	}
+	// enable allow-credentials
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:    1024,
 		WriteBufferSize:   1024,
 		CheckOrigin:       co,
 		EnableCompression: s.cfg.WSCompression,
 	}
+
 	s.conns = make(map[string]*wsConn)
 }
 
@@ -68,6 +70,11 @@ func (s *Service) wsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// If add access-control-allow-origin header, also add allow-credentials if we allow all origins. This is required for the browser to accept the response when credentials are included in the request.
+	if  s.cfg.allowOrigin[0] == "*" {
+		h.Add("Access-Control-Allow-Credentials", "true")
 	}
 
 	// Upgrade to gorilla websocket
