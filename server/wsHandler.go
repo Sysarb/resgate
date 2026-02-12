@@ -74,7 +74,11 @@ func (s *Service) wsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// If add access-control-allow-origin header, also add allow-credentials if we allow all origins. This is required for the browser to accept the response when credentials are included in the request.
 	if  s.cfg.allowOrigin[0] == "*" {
+		if h == nil {
+			h = make(http.Header)
+		}
 		h.Add("Access-Control-Allow-Credentials", "true")
+		h.Add("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 	}
 
 	// Upgrade to gorilla websocket
