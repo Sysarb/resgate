@@ -141,6 +141,42 @@ func TestTracingOnSubscribeWithoutClientTraceContext(t *testing.T) {
 	})
 }
 
+// Test that a system.reset event triggers a get request carrying its own
+// new trace context, as the re-get is initiated by the server and not by any
+// client.
+func TestTracingOnSystemResetGetRequest(t *testing.T) {
+	enableTracing(t)
+	model := resourceData("test.model")
+
+	runTest(t, func(s *Session) {
+		c := s.Connect()
+		creq := c.RequestWithTracing("subscribe.test.model", nil, &rpc.Tracing{TraceParent: testTraceParent})
+		mreqs := s.GetParallelRequests(t, 2)
+		mreqs.GetRequest(t, "access.test.model").RespondSuccess(json.RawMessage(`{"get":true}`))
+		getReq := mreqs.GetRequest(t, "get.test.model")
+		getTraceID, _ := parseTraceParent(t, getReq.Headers["traceparent"])
+		getReq.RespondSuccess(json.RawMessage(`{"model":` + model + `}`))
+		creq.GetResponse(t)
+
+		// Send system reset
+		s.SystemEvent("reset", json.RawMessage(`{"resources":["test.>"]}`))
+
+		// Validate the reset get request carries a new trace context
+		resetReq := s.GetRequest(t).AssertSubject(t, "get.test.model")
+		resetTraceID, _ := parseTraceParent(t, resetReq.Headers["traceparent"])
+		if resetTraceID == testTraceID {
+			t.Fatalf("expected reset get request to start a new trace, but got the client's trace ID %q", resetTraceID)
+		}
+		if resetTraceID == getTraceID {
+			t.Fatalf("expected reset get request to start a new trace, but got the original get request's trace ID %q", getTraceID)
+		}
+		resetReq.RespondSuccess(json.RawMessage(`{"model":` + model + `}`))
+
+		// Validate no events are sent to client
+		c.AssertNoEvent(t, "test.model")
+	})
+}
+
 // Test that no trace headers are sent on get and access requests when
 // tracing is disabled, even if the client provides a trace context.
 func TestTracingDisabledSendsNoHeaders(t *testing.T) {

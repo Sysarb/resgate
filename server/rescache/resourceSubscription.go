@@ -1,12 +1,14 @@
 package rescache
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
 	"github.com/resgateio/resgate/server/codec"
 	"github.com/resgateio/resgate/server/reserr"
 	"github.com/resgateio/resgate/server/tracing"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -462,23 +464,43 @@ func (rs *ResourceSubscription) handleResetResource(t *Throttle) {
 	subj := "get." + rs.e.ResourceName
 	payload := codec.CreateGetRequest(rs.query)
 
+	// A reset re-get is initiated by the server, not by any client, so its
+	// span is a root without links, marked by the res.trigger attribute. It
+	// is ended in processResetGetResponse.
+	var span trace.Span
+	var headers map[string]string
+	if tracing.Enabled() {
+		var ctx context.Context
+		ctx, span = tracing.StartSpan(context.Background(), "resgate.get",
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("res.resource", rs.e.ResourceName),
+				attribute.String("res.trigger", "system.reset"),
+			),
+		)
+		headers = tracing.InjectHeaders(ctx)
+	}
+
+	cb := func(_ string, data []byte, err error) {
+		rs.e.Enqueue(func() {
+			rs.resetting = false
+			rs.processResetGetResponse(data, err, span)
+		})
+		if t != nil {
+			t.Done()
+		}
+	}
+	send := func() {
+		if headers == nil {
+			rs.e.cache.mq.SendRequest(subj, payload, cb)
+		} else {
+			rs.e.cache.mq.SendRequestWithHeaders(subj, payload, headers, cb)
+		}
+	}
 	if t != nil {
-		t.Add(func() {
-			rs.e.cache.mq.SendRequest(subj, payload, func(_ string, data []byte, err error) {
-				rs.e.Enqueue(func() {
-					rs.resetting = false
-					rs.processResetGetResponse(data, err)
-				})
-				t.Done()
-			})
-		})
+		t.Add(send)
 	} else {
-		rs.e.cache.mq.SendRequest(subj, payload, func(_ string, data []byte, err error) {
-			rs.e.Enqueue(func() {
-				rs.resetting = false
-				rs.processResetGetResponse(data, err)
-			})
-		})
+		send()
 	}
 }
 
@@ -488,7 +510,10 @@ func (rs *ResourceSubscription) handleResetAccess(t *Throttle) {
 	}
 }
 
-func (rs *ResourceSubscription) processResetGetResponse(payload []byte, err error) {
+func (rs *ResourceSubscription) processResetGetResponse(payload []byte, err error, span trace.Span) {
+	// End the span covering the reset get request, if any.
+	defer tracing.EndSpan(span)
+
 	var result *codec.GetResult
 	// Either we have an error making the request
 	// or an error in the service's response
@@ -505,8 +530,11 @@ func (rs *ResourceSubscription) processResetGetResponse(payload []byte, err erro
 		// a delete event is generated. Otherwise we
 		// just log the error.
 		if reserr.IsError(err, reserr.CodeNotFound) {
+			// A notFound response deletes the resource - a normal outcome
+			// of a reset re-get, not a failure of the request.
 			rs.handleEvent(&ResourceEvent{Event: "delete"})
 		} else {
+			tracing.RecordSpanError(span, err)
 			rs.e.cache.Errorf("Subscription %s: Reset get error - %s", rs.e.ResourceName, err)
 		}
 		return
