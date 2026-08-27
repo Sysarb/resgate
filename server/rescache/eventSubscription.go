@@ -1,11 +1,16 @@
 package rescache
 
 import (
+	"context"
 	"sync"
 
 	"github.com/resgateio/resgate/server/codec"
 	"github.com/resgateio/resgate/server/mq"
 	"github.com/resgateio/resgate/server/reserr"
+	"github.com/resgateio/resgate/server/rpc"
+	"github.com/resgateio/resgate/server/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ResourceType is an enum representing a resource type
@@ -66,7 +71,7 @@ func (e *EventSubscription) getResourceSubscription(q string) (rs *ResourceSubsc
 	return
 }
 
-func (e *EventSubscription) addSubscriber(sub Subscriber, t *Throttle) {
+func (e *EventSubscription) addSubscriber(sub Subscriber, t *Throttle, tr *rpc.Tracing) {
 	e.Enqueue(func() {
 		var rs *ResourceSubscription
 		q := sub.ResourceQuery()
@@ -85,17 +90,33 @@ func (e *EventSubscription) addSubscriber(sub Subscriber, t *Throttle) {
 			// Create request
 			subj := "get." + e.ResourceName
 			payload := codec.CreateGetRequest(q)
+			// The response to a get request is cached and shared by all
+			// subscribers of the resource, so the span is a new root linked
+			// to - not a child of - the trace context of the subscriber
+			// triggering the request. Subscribers piggybacking on the request
+			// while it is in flight are linked in the stateRequested case.
+			// The span is ended in enqueueGetResponse.
+			var headers map[string]string
+			if tracing.Enabled() {
+				opts := []trace.SpanStartOption{
+					trace.WithSpanKind(trace.SpanKindClient),
+					trace.WithAttributes(
+						attribute.String("res.resource", e.ResourceName),
+					),
+				}
+				if link, ok := tracingLink(tr); ok {
+					opts = append(opts, trace.WithLinks(link))
+				}
+				var ctx context.Context
+				ctx, rs.getSpan = tracing.StartSpan(context.Background(), "resgate.get", opts...)
+				headers = tracing.InjectHeaders(ctx)
+			}
 			// Request directly if we don't throttle, or else add to throttle
 			if t == nil {
-				e.cache.mq.SendRequest(subj, payload, func(_ string, data []byte, err error) {
-					rs.enqueueGetResponse(data, err)
-				})
+				e.sendGetRequest(rs, subj, payload, headers, nil)
 			} else {
 				t.Add(func() {
-					e.cache.mq.SendRequest(subj, payload, func(_ string, data []byte, err error) {
-						rs.enqueueGetResponse(data, err)
-						t.Done()
-					})
+					e.sendGetRequest(rs, subj, payload, headers, t)
 				})
 			}
 
@@ -103,6 +124,13 @@ func (e *EventSubscription) addSubscriber(sub Subscriber, t *Throttle) {
 		// In that case the subscriber will be handled
 		// on the response for that request
 		case stateRequested:
+			// Link the span of the in-flight get request to this
+			// subscriber's trace context.
+			if rs.getSpan != nil {
+				if link, ok := tracingLink(tr); ok {
+					rs.getSpan.AddLink(link)
+				}
+			}
 			return
 
 		// An error occurred during request
@@ -125,6 +153,23 @@ func (e *EventSubscription) addSubscriber(sub Subscriber, t *Throttle) {
 			sub.Loaded(rs, nil)
 		}
 	})
+}
+
+// sendGetRequest sends a get request for the resource subscription. The
+// header-carrying code path is only used when trace headers are actually set,
+// keeping the path unchanged when tracing is disabled.
+func (e *EventSubscription) sendGetRequest(rs *ResourceSubscription, subj string, payload []byte, headers map[string]string, t *Throttle) {
+	cb := func(_ string, data []byte, err error) {
+		rs.enqueueGetResponse(data, err)
+		if t != nil {
+			t.Done()
+		}
+	}
+	if headers == nil {
+		e.cache.mq.SendRequest(subj, payload, cb)
+	} else {
+		e.cache.mq.SendRequestWithHeaders(subj, payload, headers, cb)
+	}
 }
 
 // Enqueue passes the callback function to be executed by one of the worker goroutines.

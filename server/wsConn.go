@@ -227,19 +227,19 @@ func (c *wsConn) Reply(data []byte) {
 	}
 }
 
-func (c *wsConn) GetResource(rid string, cb func(data *rpc.Resources, err error)) {
+func (c *wsConn) GetResource(rid string, tracing *rpc.Tracing, cb func(data *rpc.Resources, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsGet.Add(1)
 	}
 
-	sub, err := c.Subscribe(rid, true, nil)
+	sub, err := c.Subscribe(rid, true, nil, tracing)
 	if err != nil {
 		cb(nil, err)
 		return
 	}
 
-	sub.CanGet(func(err error) {
+	sub.CanGet(tracing, func(err error) {
 		if err != nil {
 			cb(nil, err)
 			c.Unsubscribe(sub, true, false, 1, true)
@@ -294,13 +294,13 @@ func (c *wsConn) SetVersion(protocol string) (string, error) {
 // differs from GetSubscription by making an access call separately, and not
 // within the subscription, in order to call access with isHTTP set to true.
 func (c *wsConn) GetHTTPSubscription(rid string, cb func(sub *Subscription, meta *codec.Meta, err error)) {
-	sub, err := c.Subscribe(rid, true, nil)
+	sub, err := c.Subscribe(rid, true, nil, nil)
 	if err != nil {
 		cb(nil, nil, err)
 		return
 	}
 
-	c.serv.cache.Access(sub, c.token, true, func(access *rescache.Access, meta *codec.Meta) {
+	c.serv.cache.Access(sub, c.token, true, nil, func(access *rescache.Access, meta *codec.Meta) {
 		c.Enqueue(func() {
 			// If the status value in the meta should lead to a response without
 			// any subsequent requests, make a quick exit.
@@ -335,19 +335,19 @@ func (c *wsConn) GetHTTPSubscription(rid string, cb func(sub *Subscription, meta
 	})
 }
 
-func (c *wsConn) SubscribeResource(rid string, cb func(data *rpc.Resources, err error)) {
+func (c *wsConn) SubscribeResource(rid string, tracing *rpc.Tracing, cb func(data *rpc.Resources, err error)) {
 	// Metrics
 	if c.serv.metrics != nil {
 		c.serv.metrics.WSRequestsSubscribe.Add(1)
 	}
 
-	sub, err := c.Subscribe(rid, true, nil)
+	sub, err := c.Subscribe(rid, true, nil, tracing)
 	if err != nil {
 		cb(nil, err)
 		return
 	}
 
-	sub.CanGet(func(err error) {
+	sub.CanGet(tracing, func(err error) {
 		if err != nil {
 			cb(nil, err)
 			c.Unsubscribe(sub, true, false, 1, true)
@@ -386,7 +386,7 @@ func (c *wsConn) CallResource(rid, action string, params interface{}, tracing *r
 func (c *wsConn) CallHTTPResource(rid, action string, params interface{}, cb func(result json.RawMessage, href string, err error, meta *codec.Meta)) {
 	sub := NewSubscription(c, rid, nil)
 
-	c.serv.cache.Access(sub, c.token, true, func(access *rescache.Access, accessMeta *codec.Meta) {
+	c.serv.cache.Access(sub, c.token, true, nil, func(access *rescache.Access, accessMeta *codec.Meta) {
 		c.Enqueue(func() {
 			// If the status value in the meta should lead to a response without
 			// any subsequent requests, make a quick exit.
@@ -425,7 +425,7 @@ func (c *wsConn) call(rid, action string, params interface{}, tracing *rpc.Traci
 		sub = NewSubscription(c, rid, nil)
 	}
 
-	sub.CanCall(action, func(err error) {
+	sub.CanCall(action, tracing, func(err error) {
 		if err != nil {
 			cb(nil, "", nil, err)
 			return
@@ -514,12 +514,12 @@ func (c *wsConn) handleCallAuthResponse(result json.RawMessage, refRID string, t
 }
 
 func (c *wsConn) handleResourceResult(refRID string, t *rpc.Tracing, cb func(result interface{}, t *rpc.Tracing, err error)) {
-	sub, err := c.Subscribe(refRID, true, nil)
+	sub, err := c.Subscribe(refRID, true, nil, t)
 	if err != nil {
 		cb(nil, t, err)
 		return
 	}
-	sub.CanGet(func(err error) {
+	sub.CanGet(t, func(err error) {
 		if err != nil {
 			// Respond with success even if the client is not allowed to get
 			// the referenced resource, as the call in itself succeeded.
@@ -557,7 +557,7 @@ func (c *wsConn) UnsubscribeResource(rid string, count int, cb func(ok bool)) {
 	cb(c.UnsubscribeByRID(rid, count))
 }
 
-func (c *wsConn) subscribe(rid string, direct bool, t *rescache.Throttle) (*Subscription, error) {
+func (c *wsConn) subscribe(rid string, direct bool, t *rescache.Throttle, tracing *rpc.Tracing) (*Subscription, error) {
 
 	sub, ok := c.subs[rid]
 	if ok {
@@ -575,7 +575,7 @@ func (c *wsConn) subscribe(rid string, direct bool, t *rescache.Throttle) (*Subs
 
 	sub = NewSubscription(c, rid, t)
 	_ = c.addCount(sub, direct)
-	c.serv.cache.Subscribe(sub, t)
+	c.serv.cache.Subscribe(sub, t, tracing)
 
 	c.subs[rid] = sub
 	return sub, nil
@@ -583,12 +583,12 @@ func (c *wsConn) subscribe(rid string, direct bool, t *rescache.Throttle) (*Subs
 
 // subscribe gets existing subscription or creates a new one to cache
 // Will return error if number of allowed subscriptions for the resource is exceeded
-func (c *wsConn) Subscribe(rid string, direct bool, t *rescache.Throttle) (*Subscription, error) {
+func (c *wsConn) Subscribe(rid string, direct bool, t *rescache.Throttle, tracing *rpc.Tracing) (*Subscription, error) {
 	if c.disposing {
 		return nil, reserr.ErrDisposing
 	}
 
-	return c.subscribe(rid, direct, t)
+	return c.subscribe(rid, direct, t, tracing)
 }
 
 // unsubscribe counts down the subscription counter
@@ -669,8 +669,8 @@ func (c *wsConn) setToken(token json.RawMessage, tid string) {
 	}
 }
 
-func (c *wsConn) Access(s *Subscription, cb func(*rescache.Access)) {
-	c.serv.cache.Access(s, c.token, false, func(access *rescache.Access, _ *codec.Meta) {
+func (c *wsConn) Access(s *Subscription, tracing *rpc.Tracing, cb func(*rescache.Access)) {
+	c.serv.cache.Access(s, c.token, false, tracing, func(access *rescache.Access, _ *codec.Meta) {
 		cb(access)
 	})
 }

@@ -20,9 +20,9 @@ type ConnSubscriber interface {
 	Errorf(format string, v ...interface{})
 	CID() string
 	Token() json.RawMessage
-	Subscribe(rid string, direct bool, throttle *rescache.Throttle) (*Subscription, error)
+	Subscribe(rid string, direct bool, throttle *rescache.Throttle, tracing *rpc.Tracing) (*Subscription, error)
 	Unsubscribe(sub *Subscription, direct bool, sent bool, count int, tryDelete bool)
-	Access(sub *Subscription, callback func(*rescache.Access))
+	Access(sub *Subscription, tracing *rpc.Tracing, callback func(*rescache.Access))
 	Send(data []byte)
 	Enqueue(f func()) bool
 	ExpandCID(string) string
@@ -520,7 +520,7 @@ func (s *Subscription) addReference(rid string) (*Subscription, error) {
 	}
 
 	if ref == nil {
-		sub, err := s.c.Subscribe(rid, false, s.throttle)
+		sub, err := s.c.Subscribe(rid, false, s.throttle, nil)
 
 		if err != nil {
 			return nil, err
@@ -773,7 +773,7 @@ func (s *Subscription) handleReaccess(t *rescache.Throttle) {
 	s.loadAccess(func(a *rescache.Access) {
 		s.validateAccess(a)
 		s.unqueueEvents(queueReasonReaccess)
-	}, t)
+	}, t, nil)
 }
 
 // validateAccess checks if subscription has get access, or else unsubscribes.
@@ -873,7 +873,7 @@ func parseRID(rid string) (name string, query string) {
 	return rid[:i], rid[i+1:]
 }
 
-func (s *Subscription) loadAccess(cb func(*rescache.Access), t *rescache.Throttle) {
+func (s *Subscription) loadAccess(cb func(*rescache.Access), t *rescache.Throttle, tracing *rpc.Tracing) {
 	if s.access != nil {
 		cb(s.access)
 		return
@@ -889,7 +889,7 @@ func (s *Subscription) loadAccess(cb func(*rescache.Access), t *rescache.Throttl
 
 	if t != nil {
 		t.Add(func() {
-			s.c.Access(s, func(access *rescache.Access) {
+			s.c.Access(s, tracing, func(access *rescache.Access) {
 				s.c.Enqueue(func() {
 					if s.state == stateDisposed {
 						return
@@ -911,7 +911,7 @@ func (s *Subscription) loadAccess(cb func(*rescache.Access), t *rescache.Throttl
 			})
 		})
 	} else {
-		s.c.Access(s, func(access *rescache.Access) {
+		s.c.Access(s, tracing, func(access *rescache.Access) {
 			s.c.Enqueue(func() {
 				if s.state == stateDisposed {
 					return
@@ -937,18 +937,18 @@ func (s *Subscription) loadAccess(cb func(*rescache.Access), t *rescache.Throttl
 // the resource. If access is denied, the callback will be called with an error
 // describing the reason. If access is granted, the callback will be called with
 // err being nil.
-func (s *Subscription) CanGet(cb func(err error)) {
+func (s *Subscription) CanGet(tracing *rpc.Tracing, cb func(err error)) {
 	s.loadAccess(func(a *rescache.Access) {
 		cb(a.CanGet())
-	}, nil)
+	}, nil, tracing)
 }
 
 // CanCall checks asynchronously if the client connection has access to call
 // the actionn. If access is denied, the callback will be called with an error
 // describing the reason. If access is granted, the callback will be called with
 // err being nil.
-func (s *Subscription) CanCall(action string, cb func(err error)) {
+func (s *Subscription) CanCall(action string, tracing *rpc.Tracing, cb func(err error)) {
 	s.loadAccess(func(a *rescache.Access) {
 		cb(a.CanCall(action))
-	}, nil)
+	}, nil, tracing)
 }

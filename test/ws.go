@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/resgateio/resgate/server/reserr"
+	"github.com/resgateio/resgate/server/rpc"
 )
 
 // Conn represents a client websocket connection
@@ -28,9 +29,10 @@ type Conn struct {
 }
 
 type clientRequest struct {
-	Method string      `json:"method"`
-	Params interface{} `json:"params,omitempty"`
-	ID     uint64      `json:"id"`
+	Method  string       `json:"method"`
+	Params  interface{}  `json:"params,omitempty"`
+	ID      uint64       `json:"id"`
+	Tracing *rpc.Tracing `json:"tracing,omitempty"`
 }
 
 type clientResponse struct {
@@ -83,6 +85,12 @@ func NewConn(s *Session, d *websocket.Dialer, ws *websocket.Conn, evs chan *Clie
 // Request sends a properly formatted request to the gateway
 // using the method and parameters provided.
 func (c *Conn) Request(method string, params interface{}) *ClientRequest {
+	return c.RequestWithTracing(method, params, nil)
+}
+
+// RequestWithTracing sends a properly formatted request to the gateway
+// using the method, parameters, and tracing context provided.
+func (c *Conn) RequestWithTracing(method string, params interface{}, tracing *rpc.Tracing) *ClientRequest {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -93,9 +101,10 @@ func (c *Conn) Request(method string, params interface{}) *ClientRequest {
 	id := clientRequestID
 	clientRequestID++
 	err := c.ws.WriteJSON(clientRequest{
-		ID:     id,
-		Method: method,
-		Params: params,
+		ID:      id,
+		Method:  method,
+		Params:  params,
+		Tracing: tracing,
 	})
 	if err != nil {
 		panic("test: error marshaling client request: " + err.Error())

@@ -148,23 +148,47 @@ func (c *Cache) Errorf(format string, v ...interface{}) {
 }
 
 // Subscribe fetches a resource from the cache, and if it is
-// not cached, starts subscribing to the resource and sends a get request
-func (c *Cache) Subscribe(sub Subscriber, t *Throttle) {
+// not cached, starts subscribing to the resource and sends a get request.
+// The tracing context, tr, is used to link any span covering a resulting get
+// request to the subscribing client's trace. It may be nil.
+func (c *Cache) Subscribe(sub Subscriber, t *Throttle, tr *rpc.Tracing) {
 	eventSub, err := c.getSubscription(sub.ResourceName(), true)
 	if err != nil {
 		sub.Loaded(nil, err)
 		return
 	}
 
-	eventSub.addSubscriber(sub, t)
+	eventSub.addSubscriber(sub, t, tr)
 }
 
-// Access sends an access request
-func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, callback func(access *Access, meta *codec.Meta)) {
+// Access sends an access request. The tracing context, tr, may be nil. An
+// access request is made on behalf of a single client, so its span is a child
+// of the client's trace context.
+func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, tr *rpc.Tracing, callback func(access *Access, meta *codec.Meta)) {
 	rname := sub.ResourceName()
 	payload := codec.CreateRequest(nil, sub, sub.ResourceQuery(), token, isHTTP)
 	subj := "access." + rname
-	c.sendRequest(rname, subj, payload, func(data []byte, err error) {
+
+	var span trace.Span
+	var headers map[string]string
+	if tracing.Enabled() {
+		ctx := extractTracingContext(tr)
+		ctx, span = tracing.StartSpan(ctx, "resgate.access",
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("res.resource", rname),
+			),
+		)
+		headers = tracing.InjectHeaders(ctx)
+	}
+
+	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
+		if span != nil {
+			if err != nil {
+				span.RecordError(err)
+			}
+			span.End()
+		}
 		if err != nil {
 			callback(&Access{Error: reserr.RESError(err)}, nil)
 			return
@@ -286,10 +310,6 @@ func (c *Cache) CustomAuth(req codec.AuthRequester, subj, query string, token, p
 	})
 }
 
-func (c *Cache) sendRequest(rname, subj string, payload []byte, cb func(data []byte, err error)) {
-	c.sendRequestWithHeaders(rname, subj, payload, nil, cb)
-}
-
 func (c *Cache) sendRequestWithHeaders(rname, subj string, payload []byte, headers map[string]string, cb func(data []byte, err error)) {
 	eventSub, _ := c.getSubscription(rname, false)
 	c.mq.SendRequestWithHeaders(subj, payload, headers, func(_ string, data []byte, err error) {
@@ -298,6 +318,19 @@ func (c *Cache) sendRequestWithHeaders(rname, subj string, payload []byte, heade
 			eventSub.removeCount(1)
 		})
 	})
+}
+
+// tracingLink creates a span link to the trace context in t. Returns false
+// if t is nil or holds no valid trace context.
+func tracingLink(t *rpc.Tracing) (trace.Link, bool) {
+	if t == nil {
+		return trace.Link{}, false
+	}
+	sc := trace.SpanContextFromContext(tracing.ExtractContext(t.TraceParent, t.TraceState))
+	if !sc.IsValid() {
+		return trace.Link{}, false
+	}
+	return trace.Link{SpanContext: sc}, true
 }
 
 // extractTracingContext extracts trace context from rpc.Tracing
