@@ -118,8 +118,10 @@ func TestTracingOnGet(t *testing.T) {
 	})
 }
 
-// Test that resgate traces its own get and access requests even when the
-// client provides no trace context.
+// Test that resgate traces the shared get fetch even when the client
+// provides no trace context, while the access request - made per client
+// request rather than deduplicated by the cache - is only traced when there
+// is a client trace context to attach its span to.
 func TestTracingOnSubscribeWithoutClientTraceContext(t *testing.T) {
 	enableTracing(t)
 	model := resourceData("test.model")
@@ -130,7 +132,9 @@ func TestTracingOnSubscribeWithoutClientTraceContext(t *testing.T) {
 		mreqs := s.GetParallelRequests(t, 2)
 
 		accessReq := mreqs.GetRequest(t, "access.test.model")
-		parseTraceParent(t, accessReq.Headers["traceparent"])
+		if accessReq.Headers != nil {
+			t.Fatalf("expected no headers on access request without client trace context, but got %v", accessReq.Headers)
+		}
 
 		getReq := mreqs.GetRequest(t, "get.test.model")
 		parseTraceParent(t, getReq.Headers["traceparent"])
@@ -141,9 +145,11 @@ func TestTracingOnSubscribeWithoutClientTraceContext(t *testing.T) {
 	})
 }
 
-// Test that a system.reset event triggers a get request carrying its own
-// new trace context, as the re-get is initiated by the server and not by any
-// client.
+// Test that a system.reset event triggers get requests without trace
+// context. A reset re-fetches every matching cached resource, so tracing
+// each re-get would flood the tracing backend; the reset is instead traced
+// as a single resgate.reset span per event, which is not observable through
+// the NATS requests.
 func TestTracingOnSystemResetGetRequest(t *testing.T) {
 	enableTracing(t)
 	model := resourceData("test.model")
@@ -154,21 +160,17 @@ func TestTracingOnSystemResetGetRequest(t *testing.T) {
 		mreqs := s.GetParallelRequests(t, 2)
 		mreqs.GetRequest(t, "access.test.model").RespondSuccess(json.RawMessage(`{"get":true}`))
 		getReq := mreqs.GetRequest(t, "get.test.model")
-		getTraceID, _ := parseTraceParent(t, getReq.Headers["traceparent"])
+		parseTraceParent(t, getReq.Headers["traceparent"])
 		getReq.RespondSuccess(json.RawMessage(`{"model":` + model + `}`))
 		creq.GetResponse(t)
 
 		// Send system reset
 		s.SystemEvent("reset", json.RawMessage(`{"resources":["test.>"]}`))
 
-		// Validate the reset get request carries a new trace context
+		// Validate the reset get request carries no trace context
 		resetReq := s.GetRequest(t).AssertSubject(t, "get.test.model")
-		resetTraceID, _ := parseTraceParent(t, resetReq.Headers["traceparent"])
-		if resetTraceID == testTraceID {
-			t.Fatalf("expected reset get request to start a new trace, but got the client's trace ID %q", resetTraceID)
-		}
-		if resetTraceID == getTraceID {
-			t.Fatalf("expected reset get request to start a new trace, but got the original get request's trace ID %q", getTraceID)
+		if resetReq.Headers != nil {
+			t.Fatalf("expected no headers on reset get request, but got %v", resetReq.Headers)
 		}
 		resetReq.RespondSuccess(json.RawMessage(`{"model":` + model + `}`))
 
