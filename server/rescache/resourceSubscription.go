@@ -6,6 +6,7 @@ import (
 
 	"github.com/resgateio/resgate/server/codec"
 	"github.com/resgateio/resgate/server/reserr"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type subscriptionState byte
@@ -71,6 +72,10 @@ type ResourceSubscription struct {
 	model      *Model
 	collection *Collection
 	err        error
+	// getSpan covers an in-flight get request. Accessed only on the event
+	// subscription queue. Nil when tracing is disabled or no request is in
+	// flight.
+	getSpan trace.Span
 }
 
 func newResourceSubscription(e *EventSubscription, query string) *ResourceSubscription {
@@ -309,7 +314,19 @@ func (rs *ResourceSubscription) handleEventDelete(r *ResourceEvent) {
 
 func (rs *ResourceSubscription) enqueueGetResponse(data []byte, err error) {
 	rs.e.Enqueue(func() {
+		span := rs.getSpan
+		rs.getSpan = nil
+
 		rs, sublist := rs.processGetResponse(data, err)
+
+		if span != nil {
+			if err != nil {
+				span.RecordError(err)
+			} else if rs.state == stateError {
+				span.RecordError(rs.err)
+			}
+			span.End()
+		}
 
 		rs.e.mu.Unlock()
 		defer rs.e.mu.Lock()

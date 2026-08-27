@@ -13,8 +13,8 @@ import (
 // Requester has the methods required to perform a rpc request
 type Requester interface {
 	Reply(data []byte)
-	GetResource(rid string, callback func(data *Resources, err error))
-	SubscribeResource(rid string, callback func(data *Resources, err error))
+	GetResource(rid string, tracing *Tracing, callback func(data *Resources, err error))
+	SubscribeResource(rid string, tracing *Tracing, callback func(data *Resources, err error))
 	UnsubscribeResource(rid string, count int, callback func(ok bool))
 	CallResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, t *Tracing, err error))
 	AuthResource(rid, action string, params interface{}, tracing *Tracing, callback func(result interface{}, t *Tracing, err error))
@@ -178,7 +178,7 @@ func HandleRequest(data []byte, req Requester) error {
 
 	switch action {
 	case "get":
-		req.GetResource(rid, func(data *Resources, err error) {
+		req.GetResource(rid, r.Tracing, func(data *Resources, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
@@ -186,7 +186,7 @@ func HandleRequest(data []byte, req Requester) error {
 			}
 		})
 	case "subscribe":
-		req.SubscribeResource(rid, func(data *Resources, err error) {
+		req.SubscribeResource(rid, r.Tracing, func(data *Resources, err error) {
 			if err != nil {
 				req.Reply(r.ErrorResponse(err))
 			} else {
