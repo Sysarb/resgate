@@ -163,7 +163,11 @@ func (c *Cache) Subscribe(sub Subscriber, t *Throttle, tr *rpc.Tracing) {
 
 // Access sends an access request. The tracing context, tr, may be nil. An
 // access request is made on behalf of a single client, so its span is a child
-// of the client's trace context.
+// of the client's trace context. Unlike get requests, access requests are not
+// deduplicated by the cache: they are made per client request, and again for
+// every direct subscription on a reaccess (eg. a system reset or token
+// event). To bound span volume, a span is only started when the request
+// carries a client trace context to attach it to.
 func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, tr *rpc.Tracing, callback func(access *Access, meta *codec.Meta)) {
 	rname := sub.ResourceName()
 	payload := codec.CreateRequest(nil, sub, sub.ResourceQuery(), token, isHTTP)
@@ -171,7 +175,7 @@ func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, tr *rpc.T
 
 	var span trace.Span
 	var headers map[string]string
-	if tracing.Enabled() {
+	if tr != nil && tracing.Enabled() {
 		ctx := extractTracingContext(tr)
 		ctx, span = tracing.StartSpan(ctx, "resgate.access",
 			trace.WithSpanKind(trace.SpanKindClient),
@@ -471,12 +475,39 @@ func (c *Cache) handleSystemReset(payload []byte) {
 		t = NewThrottle(c.resetThrottle)
 	}
 
+	// A reset makes resgate re-fetch every matching resource held in its
+	// cache. A span per re-fetch could emit thousands of spans on a single
+	// service restart, so the reset is instead traced as a single span per
+	// event, recording what was invalidated and how much. The individual
+	// re-gets and access re-checks carry no trace context.
+	var span trace.Span
+	if tracing.Enabled() {
+		_, span = tracing.StartSpan(context.Background(), "resgate.reset",
+			trace.WithAttributes(
+				attribute.StringSlice("res.resources", r.Resources),
+				attribute.StringSlice("res.access", r.Access),
+			),
+		)
+	}
+
+	resources := 0
 	c.forEachMatch(r.Resources, func(e *EventSubscription) {
 		e.handleResetResource(t)
+		resources++
 	})
+	access := 0
 	c.forEachMatch(r.Access, func(e *EventSubscription) {
 		e.handleResetAccess(t)
+		access++
 	})
+
+	if span != nil {
+		span.SetAttributes(
+			attribute.Int("res.resource_count", resources),
+			attribute.Int("res.access_count", access),
+		)
+		span.End()
+	}
 }
 
 func (c *Cache) forEachMatch(p []string, cb func(e *EventSubscription)) {
