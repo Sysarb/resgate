@@ -184,9 +184,7 @@ func (c *Cache) Access(sub Subscriber, token interface{}, isHTTP bool, tr *rpc.T
 
 	c.sendRequestWithHeaders(rname, subj, payload, headers, func(data []byte, err error) {
 		if span != nil {
-			if err != nil {
-				span.RecordError(err)
-			}
+			tracing.RecordSpanError(span, err)
 			span.End()
 		}
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -111,12 +112,20 @@ func EndSpan(span trace.Span) {
 	}
 }
 
-// RecordError records an error on the current span
+// RecordError records an error on the current span and marks the span
+// status as failed.
 func RecordError(ctx context.Context, err error) {
-	span := trace.SpanFromContext(ctx)
-	if span != nil && err != nil {
-		span.RecordError(err)
+	RecordSpanError(trace.SpanFromContext(ctx), err)
+}
+
+// RecordSpanError records an error on the span and marks the span status as
+// failed. A nil span or nil error is a no-op.
+func RecordSpanError(span trace.Span, err error) {
+	if span == nil || err == nil {
+		return
 	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // SetAttributes sets attributes on the current span
