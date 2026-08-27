@@ -6,6 +6,7 @@ import (
 
 	"github.com/resgateio/resgate/server/codec"
 	"github.com/resgateio/resgate/server/reserr"
+	"github.com/resgateio/resgate/server/tracing"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -321,9 +322,9 @@ func (rs *ResourceSubscription) enqueueGetResponse(data []byte, err error) {
 
 		if span != nil {
 			if err != nil {
-				span.RecordError(err)
+				tracing.RecordSpanError(span, err)
 			} else if rs.state == stateError {
-				span.RecordError(rs.err)
+				tracing.RecordSpanError(span, rs.err)
 			}
 			span.End()
 		}
